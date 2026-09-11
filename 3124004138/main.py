@@ -41,7 +41,9 @@ def main():
     # 检查参数数量
     if len(sys.argv) != 4:
         print("用法: python main.py [原文文件路径] [抄袭版文件路径] [答案文件路径]")
-        print("示例: python main.py C:\\\\tests\\\\orig.txt C:\\\\tests\\\\orig_add.txt C:\\\\tests\\\\ans.txt")
+        print("示例: python main.py C:\\tests\\orig.txt "
+              "C:\\tests\\orig_add.txt C:\\tests\\ans.txt")
+
         sys.exit(1)
 
     orig_path = sys.argv[1]
