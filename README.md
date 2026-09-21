@@ -1,4 +1,4 @@
-# 四则运算生成器（Myapp）
+# Myapp: Elementary Arithmetic Exercise Generator
 
 一个用 Python 实现的小学四则运算题目命令行生成器：随机生成含自然数、真分数、带分数的四则运算题目，自动计算答案，并支持对给定的题目/答案文件判分统计。
 
