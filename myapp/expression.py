@@ -63,7 +63,7 @@ def random_operand(rng, limit):
         den = rng.randrange(2, limit)
         num = rng.randrange(1, den)
         return Fraction(whole) + Fraction(num, den)
-    return Fraction(rng.randrange(0, limit))         # 自然数 0 ~ limit-1
+    return rng.randrange(0, limit)                  # 自然数 0 ~ limit-1（int 快速路径）
 
 
 def random_tree(rng, limit, operator_count):

@@ -3,9 +3,12 @@
 用法：python tools/benchmark.py
 """
 
+import os
 import random
 import sys
 import time
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from myapp.generator import generate_questions
 

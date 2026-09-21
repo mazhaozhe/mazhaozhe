@@ -47,7 +47,8 @@ class ConstraintTest(unittest.TestCase):
                 left = evaluate(node.left)
                 right = evaluate(node.right)
                 self.assertNotEqual(right, 0)
-                self.assertNotEqual((left / right).denominator, 1)
+                # evaluate 可能返回 int（整数快速路径），统一转 Fraction
+                self.assertNotEqual(Fraction(left, right).denominator, 1)
             self._check_division(node.left)
             self._check_division(node.right)
 

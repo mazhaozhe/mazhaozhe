@@ -16,6 +16,8 @@ def format_value(value):
 
     :param value: ``int`` 或非负 :class:`~fractions.Fraction`
     """
+    if isinstance(value, int):                       # 自然数（含 0）快速路径
+        return str(value)
     if not isinstance(value, Fraction):
         value = Fraction(value)
     if value.denominator == 1:                       # 自然数（含 0）
