@@ -1,0 +1,39 @@
+{
+  "name": "naiwa-agent-client",
+  "version": "1.0.0",
+  "private": true,
+  "description": "GeneralTaskAgent 的本地桌面客户端",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron --no-sandbox --disable-gpu --disable-software-rasterizer .",
+    "dev": "electron --no-sandbox --disable-gpu --disable-software-rasterizer . --dev",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder --win nsis"
+  },
+  "devDependencies": {
+    "electron": "^39.2.0",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "com.naiwa.generaltaskagent",
+    "productName": "奶蛙 Agent",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "bridge.py",
+      "renderer/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}
