@@ -1,0 +1,77 @@
+{
+  "default": "deepseek-chat",
+  "models": [
+    {
+      "id": "deepseek-chat",
+      "label": "DeepSeek Chat（日常对话）",
+      "provider": "deepseek",
+      "model": "deepseek-chat",
+      "base_url": "https://api.deepseek.com",
+      "api_key_env": "DEEPSEEK_API_KEY",
+      "temperature": 0.2,
+      "kind": "chat",
+      "supports_tools": true,
+      "max_input_tokens": 131072,
+      "max_output_tokens": 8192,
+      "pricing": {"input_per_mtok": 0.8, "output_per_mtok": 2.0},
+      "description": "性价比高，日常任务与工具调用主力"
+    },
+    {
+      "id": "deepseek-reasoner",
+      "label": "DeepSeek Reasoner（深度推理）",
+      "provider": "deepseek",
+      "model": "deepseek-reasoner",
+      "base_url": "https://api.deepseek.com",
+      "api_key_env": "DEEPSEEK_API_KEY",
+      "temperature": 0.2,
+      "kind": "reasoner",
+      "supports_tools": true,
+      "max_input_tokens": 131072,
+      "max_output_tokens": 32768,
+      "pricing": {"input_per_mtok": 4.0, "output_per_mtok": 12.0},
+      "description": "复杂任务深度思考，回答更严谨但更慢更贵"
+    },
+    {
+      "id": "qwen-plus",
+      "label": "通义千问 Qwen-Plus",
+      "provider": "openai-compatible",
+      "model": "qwen-plus",
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "api_key_env": "QWEN_API_KEY",
+      "temperature": 0.2,
+      "kind": "chat",
+      "supports_tools": true,
+      "max_input_tokens": 131072,
+      "pricing": {"input_per_mtok": 0.8, "output_per_mtok": 2.0},
+      "description": "阿里通义千问（OpenAI 兼容端点）"
+    },
+    {
+      "id": "kimi-k2",
+      "label": "Kimi K2（月之暗面）",
+      "provider": "openai-compatible",
+      "model": "kimi-k2-0905-preview",
+      "base_url": "https://api.moonshot.cn/v1",
+      "api_key_env": "MOONSHOT_API_KEY",
+      "temperature": 0.2,
+      "kind": "chat",
+      "supports_tools": true,
+      "max_input_tokens": 131072,
+      "pricing": {"input_per_mtok": 4.0, "output_per_mtok": 12.0},
+      "description": "月之暗面 Kimi，长上下文能力强"
+    },
+    {
+      "id": "ollama-local",
+      "label": "Ollama 本地模型（离线）",
+      "provider": "ollama",
+      "model": "qwen2.5:7b",
+      "base_url": "http://localhost:11434/v1",
+      "api_key_env": "",
+      "temperature": 0.2,
+      "kind": "chat",
+      "supports_tools": true,
+      "requires_key": false,
+      "max_input_tokens": 32768,
+      "description": "本地离线运行，零 token 成本（需先启动 Ollama）"
+    }
+  ]
+}
