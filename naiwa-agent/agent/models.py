@@ -23,6 +23,7 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from agent.config import settings
 from agent.observability import log_step
 
 
@@ -76,6 +77,8 @@ class ModelSpec:
     temperature   采样温度
     kind          "chat" 普通对话 / "reasoner" 深度推理
     supports_tools 是否支持工具调用（Agent 必需，False 的模型切换时会被拦截）
+    supports_vision 是否支持图片（多模态）输入。自动发现的模型按模型名猜测，
+                  可在目录里显式声明覆盖；决定上传照片时是走视觉输入还是降级提示
     requires_key  是否需要密钥（本地 Ollama 之类可为 False）
     description   一句话说明
     pricing       价格（元/百万token）：{"input_per_mtok": .., "output_per_mtok": ..}
@@ -96,6 +99,7 @@ class ModelSpec:
     temperature: float = 0.2
     kind: str = "chat"
     supports_tools: bool = True
+    supports_vision: bool = False
     requires_key: bool = True
     description: str = ""
     pricing: Dict[str, float] = field(default_factory=dict)
@@ -124,6 +128,7 @@ class ModelSpec:
             "model": self.model,
             "kind": self.kind,
             "supports_tools": self.supports_tools,
+            "supports_vision": self.supports_vision,
             "available": available,     # 密钥是否已配置（能不能用）
             "current": current,         # 是否为当前在用模型
             "description": self.description,
@@ -165,9 +170,36 @@ def _build_deepseek(spec: ModelSpec, api_key: str):
         temperature=spec.temperature,
         max_retries=2,
         stream_usage=True,        # 流式输出时也在最后一个 chunk 回传真实 token 用量
-        **_window_kwargs(spec),
-        **spec.extra,
+        **{**_window_kwargs(spec),
+           **anti_degeneration_kwargs(spec.model),
+           **spec.extra},
     )
+
+
+# 推理型模型不接受采样参数（DeepSeek reasoner / R1 / OpenAI o 系列 / thinking 变体）
+_NO_PENALTY_HINTS = ("reasoner", "-r1", "o1", "o3", "o4", "thinking")
+
+
+def anti_degeneration_kwargs(model_name: str = "") -> Dict[str, Any]:
+    """
+    反"复读机"采样参数。
+
+    模型卡在决策瘫痪（反复权衡该不该执行）时，自回归输出会退化成
+    「好。执行。好。执行。」的死循环——一次能白烧 3 万 tokens。
+    frequency_penalty 按词频惩罚已出现过的 token，是最直接的压制手段；
+    presence_penalty 轻推模型引入新内容。
+
+    推理型模型不支持采样参数，一律不传（传了可能被接口拒绝）。
+    """
+    name = (model_name or "").lower()
+    if any(hint in name for hint in _NO_PENALTY_HINTS):
+        return {}
+    kwargs: Dict[str, Any] = {}
+    if settings.frequency_penalty:
+        kwargs["frequency_penalty"] = settings.frequency_penalty
+    if settings.presence_penalty:
+        kwargs["presence_penalty"] = settings.presence_penalty
+    return kwargs
 
 
 def _build_openai_compatible(spec: ModelSpec, api_key: str):
@@ -184,8 +216,9 @@ def _build_openai_compatible(spec: ModelSpec, api_key: str):
         temperature=spec.temperature,
         max_retries=2,
         stream_usage=True,        # 流式输出时也在最后一个 chunk 回传真实 token 用量
-        **_window_kwargs(spec),
-        **spec.extra,
+        **{**_window_kwargs(spec),
+           **anti_degeneration_kwargs(spec.model),
+           **spec.extra},
     )
 
 
@@ -207,6 +240,22 @@ def _guess_kind(model_id: str) -> str:
     if any(k in low for k in ("reasoner", "think", "thinking", "r1")):
         return "reasoner"
     return "chat"
+
+
+def _guess_vision(model_id: str, patterns: list[str] | None = None) -> bool:
+    """
+    从模型名猜测是否支持图片（多模态）输入。
+
+    命中 vision_patterns（见 agent/config.py）任一子串即视为支持，
+    覆盖 qwen-vl-plus / moonshot-v1-*-vision / gpt-4o / gemini / claude-3 等
+    常见命名。patterns 传 None 时用配置里的默认列表；目录里显式声明的
+    supports_vision 始终优先（ModelSpec 字段本身即最终值）。
+    """
+    from agent.config import settings   # 延迟导入，避免模块加载顺序问题
+
+    words = patterns if patterns is not None else settings.vision_pattern_list
+    low = model_id.lower()
+    return any(word and word in low for word in words)
 
 
 def _fetch_provider_models(base_url: str, api_key: str,
@@ -331,6 +380,7 @@ class ModelManager:
                         model=mid, base_url=base_url, api_key_env=api_key_env,
                         temperature=0.2, kind=_guess_kind(mid),
                         supports_tools=True,
+                        supports_vision=_guess_vision(mid),
                         description=f"自动发现（{provider} /models）",
                     )
                     new += 1
@@ -383,6 +433,7 @@ class ModelManager:
                         model=mid, base_url=info.base_url,
                         api_key_env=info.api_key_env, temperature=0.2,
                         kind=_guess_kind(mid), supports_tools=True,
+                        supports_vision=_guess_vision(mid),
                         description=f"自动发现（{provider} · 缓存）",
                     )
         return list(ids)

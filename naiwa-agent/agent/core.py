@@ -133,12 +133,16 @@ def _build_checkpointer():
 # ---------------------------------------------------------------------------
 def build_model(use_reasoner: bool = False) -> ChatDeepSeek:
     """构造 DeepSeek 模型实例。use_reasoner=True 时切深度推理模型。"""
+    from agent.models import anti_degeneration_kwargs      # 局部导入，避免成环
+
+    name = settings.reasoner_model if use_reasoner else settings.main_model
     return ChatDeepSeek(
-        model=settings.reasoner_model if use_reasoner else settings.main_model,
+        model=name,
         api_key=settings.deepseek_api_key,
         api_base=settings.deepseek_base_url,
         temperature=settings.temperature,
         max_retries=2,          # SDK 层重试（中间件层还有一层）
+        **anti_degeneration_kwargs(name),
     )
 
 
@@ -216,6 +220,12 @@ def build_agent(extra_tools: list | None = None, use_reasoner: bool = False,
         ToolErrorMiddleware(on_tool_error),
         ToolRetryMiddleware(
             max_retries=settings.tool_retries,
+            # 只重试瞬时网络故障。默认策略会重试**所有**普通异常：
+            # 命令超时（run_shell）、参数不合法、危险命令拦截（PermissionError）
+            # 这些永久性失败也会被重试 3 次——一条 timeout=240 秒的命令因此
+            # 能放大成十几分钟到几十分钟的等待（实测放大 16 倍）。
+            # 这里收窄到网络类异常，让"失败"快速回到模型手里，由它换方案。
+            retry_on=(ConnectionError, TimeoutError),
             backoff_factor=2.0,      # 指数退避：1s → 2s → 4s
             initial_delay=1.0,
             max_delay=30.0,

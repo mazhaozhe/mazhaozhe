@@ -9,7 +9,8 @@ const PYTHON = path.join(ROOT, '.venv', 'Scripts', 'python.exe');
 const BRIDGE = path.join(__dirname, 'bridge.py');
 const ALLOWED_METHODS = new Set([
   'health', 'models', 'select_model', 'new_session', 'list_sessions',
-  'get_session', 'delete_session', 'send_message', 'tools'
+  'get_session', 'delete_session', 'send_message', 'tools',
+  'upload_file', 'discard_upload', 'cancel'
 ]);
 let mainWindow;
 let bridge;
@@ -165,6 +166,40 @@ async function runSmokeTest() {
         await wait(100);
       }
       await wait(300);
+      // 附件上传：文件选择 → 暂存 → 附件 chips → 移除
+      const attachButtonExists = Boolean(document.querySelector('#attachButton'));
+      const fileInputExists = Boolean(document.querySelector('#fileInput'));
+      const attachmentTrayExists = Boolean(document.querySelector('#attachmentTray'));
+      const stopButtonExists = Boolean(document.querySelector('#stopButton'));
+      const uploadSample = new File([new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])],
+        'naiwa.png', { type: 'image/png' });
+      const uploadTransfer = new DataTransfer();
+      uploadTransfer.items.add(uploadSample);
+      const fileInputEl = document.querySelector('#fileInput');
+      fileInputEl.files = uploadTransfer.files;
+      fileInputEl.dispatchEvent(new Event('change', { bubbles: true }));
+      let uploadChipAppeared = false;
+      for (let i = 0; i < 80; i += 1) {
+        await wait(100);
+        if (document.querySelector('#attachmentTray .attachment-chip')) {
+          uploadChipAppeared = true;
+          break;
+        }
+      }
+      const uploadRemove = document.querySelector('#attachmentTray .attachment-chip .chip-remove');
+      if (uploadRemove) uploadRemove.click();
+      await wait(300);
+      const uploadChipRemoved = !document.querySelector('#attachmentTray .attachment-chip');
+      // 历史 bug 回归：开启新对话后输入框必须立即可用（发送中被锁死过）
+      document.querySelector('#newChatHeader').click();
+      let newChatInputEnabled = false;
+      for (let i = 0; i < 60; i += 1) {
+        await wait(100);
+        if (!document.querySelector('#messageInput').disabled) {
+          newChatInputEnabled = true;
+          break;
+        }
+      }
       document.querySelector('[data-view="settings"]').click();
       document.querySelector('[data-theme-choice="night"]').click();
       const nightApplied = document.documentElement.dataset.theme === 'night';
@@ -256,6 +291,13 @@ async function runSmokeTest() {
         processItemCount,
         markdownRendered,
         answerFontReadable,
+        attachButtonExists,
+        fileInputExists,
+        attachmentTrayExists,
+        stopButtonExists,
+        uploadChipAppeared,
+        uploadChipRemoved,
+        newChatInputEnabled,
         historyCount: Number(document.querySelector('#historyCount').textContent),
         backend: document.querySelector('#backendStatus').textContent,
         brokenImages
@@ -275,6 +317,10 @@ async function runSmokeTest() {
       result.answerSeparatedFromProcess && result.processBoxExpandsOnClick &&
       result.processItemCount === 3 &&
       result.markdownRendered && result.answerFontReadable &&
+      result.attachButtonExists && result.fileInputExists &&
+      result.attachmentTrayExists && result.stopButtonExists &&
+      result.uploadChipAppeared && result.uploadChipRemoved &&
+      result.newChatInputEnabled &&
       result.brokenImages.length === 0 && consoleErrors.length === 0;
     console.log(`SMOKE_RESULT ${JSON.stringify(result)}`);
     app.exit(result.pass ? 0 : 1);
@@ -339,6 +385,14 @@ app.whenReady().then(() => {
   });
   ipcMain.handle('app:open-external', (_event, url) => {
     if (/^https:\/\//.test(url)) shell.openExternal(url);
+  });
+  // 打开本地上传目录里的附件（仅限 data/uploads，防路径穿越）
+  ipcMain.handle('app:open-path', async (_event, target) => {
+    if (typeof target !== 'string' || !target) return '';
+    const uploadsRoot = path.resolve(ROOT, 'data', 'uploads');
+    const resolved = path.resolve(target);
+    if (resolved !== uploadsRoot && !resolved.startsWith(uploadsRoot + path.sep)) return '';
+    return shell.openPath(resolved);
   });
   ipcMain.on('window:control', (_event, action) => {
     if (!mainWindow) return;

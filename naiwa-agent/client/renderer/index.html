@@ -114,19 +114,27 @@
                 </div>
               </div>
 
-              <div class="composer-wrap">
+              <div class="composer-wrap" id="composerWrap">
                 <div id="estimateBar" class="estimate-bar hidden"></div>
-                <div class="composer">
-                  <textarea id="messageInput" rows="1" placeholder="给奶蛙分配一个任务…" aria-label="输入消息"></textarea>
+                <div class="composer" id="composer">
+                  <div id="attachmentTray" class="attachment-tray hidden" aria-label="待发送附件"></div>
+                  <textarea id="messageInput" rows="1" placeholder="给奶蛙分配一个任务…（可拖入或粘贴文件/照片）" aria-label="输入消息"></textarea>
                   <div class="composer-bottom">
-                    <div class="composer-meta"><span class="composer-model" id="composerModel">未配置模型</span><span>Enter 发送 · Shift + Enter 换行</span></div>
+                    <div class="composer-left">
+                      <button id="attachButton" class="icon-button attach-button" type="button" title="上传文件或照片（也可拖入 / Ctrl+V 粘贴）" aria-label="上传文件或照片">
+                        <svg viewBox="0 0 24 24"><path d="m21.4 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+                      </button>
+                      <div class="composer-meta"><span class="composer-model" id="composerModel">未配置模型</span><span>Enter 发送 · Shift + Enter 换行</span></div>
+                    </div>
                     <button id="sendButton" class="send-button" aria-label="发送消息">
                       <svg viewBox="0 0 24 24"><path d="m5 12 14-8-3 16-4-6-7-2zM12 14l7-10"/></svg><span>发送</span>
                     </button>
+                    <button id="stopButton" class="send-button stop-button hidden" type="button" aria-label="停止当前任务">停止</button>
                   </div>
                 </div>
                 <p class="composer-disclaimer">Agent 可能会犯错，重要文件与外部操作请注意核查。</p>
               </div>
+              <input id="fileInput" class="hidden" type="file" multiple accept="image/*,.txt,.md,.markdown,.csv,.tsv,.json,.jsonl,.py,.js,.mjs,.ts,.java,.kt,.c,.h,.cpp,.hpp,.go,.rs,.rb,.php,.swift,.sql,.sh,.bat,.ps1,.html,.htm,.xml,.svg,.yaml,.yml,.toml,.ini,.cfg,.conf,.log,.css,.scss,.pdf,.docx,.xlsx,.pptx">
             </div>
 
             <aside class="run-panel">

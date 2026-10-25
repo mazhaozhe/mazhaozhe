@@ -5,10 +5,23 @@ tools/coding.py —— 代码开发类工具
 错误处理策略：可重试的异常（文件不存在、命令超时等）直接 raise，
 交给 ToolRetryMiddleware / ToolErrorMiddleware 处理；
 不可恢复的情况（文件过大）返回说明文本让模型换方案。
+
+run_shell 必须用异步子进程实现（2026-10 修复「到这个工具就卡住」）：
+同步的 subprocess.run 会被 LangGraph 丢进线程池执行，用户点「停止」
+时协程取消杀不掉线程里的子进程——pip install 之类会顶着 timeout
+继续在后台跑满数分钟，Windows 上 shell=True 的管道孙进程还会让
+communicate() 干等管道 EOF，表现为"卡住"。异步实现下：
+    - 事件循环不被阻塞，等待期间新对话/取消/上传都能即时处理；
+    - 取消（CancelledError）与超时都会杀掉整棵进程树（含 cmd/bash
+      的子孙进程），不留孤儿；
+    - Windows 上先 chcp 65001 + PYTHONUTF8=1，解决中文输出乱码。
 """
 
+import asyncio
+import os
 import re
-import subprocess
+import signal
+import sys
 from pathlib import Path
 
 from langchain.tools import tool
@@ -208,27 +221,114 @@ def list_dir(path: str = ".", pattern: str = "*") -> str:
     return "\n".join(lines)
 
 
+# 项目根目录（tools/coding.py → 上两级）：用于定位项目虚拟环境
+_BASE_DIR = Path(__file__).resolve().parent.parent
+
+
+def _shell_env() -> dict[str, str]:
+    """
+    构造 Shell 命令的执行环境。
+
+    核心是**把项目 .venv 放到 PATH 最前**：否则 `python` / `pip` 会解析到
+    系统 Python（甚至 Microsoft Store 的存根，执行时会弹窗挂住），模型
+    `pip install` 装进别的环境——Agent 自己（跑在 .venv 里）永远用不上，
+    于是它反复装、反复失败，用户看到的就是"每次到这个工具就卡住"。
+    """
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
+    bin_dir = _BASE_DIR / ".venv" / ("Scripts" if os.name == "nt" else "bin")
+    if bin_dir.is_dir():
+        env["PATH"] = str(bin_dir) + os.pathsep + env.get("PATH", "")
+        env["VIRTUAL_ENV"] = str(bin_dir.parent)
+        env.pop("PYTHONHOME", None)   # 别处继承来的 PYTHONHOME 会弄乱 .venv
+    return env
+
+
 @register
 @tool(args_schema=RunShellArgs)
-def run_shell(command: str, timeout: int = 60) -> str:
-    """执行 Shell 命令（跑测试/装依赖/看版本等），超时自动终止。"""
+async def run_shell(command: str, timeout: int = 60) -> str:
+    """执行 Shell 命令（跑测试/装依赖/看版本等），超时或取消时连同子进程树一并终止。"""
     lowered = command.lower()
     for pattern in _DANGEROUS_PATTERNS:
         if pattern in lowered:
             # 高危命令：不执行，直接报错让模型放弃该方案
             raise PermissionError(f"命令被安全策略拦截：包含危险操作 `{pattern}`")
+
+    # Windows 控制台默认 GBK 代码页：切 UTF-8 + 强制 Python 输出 UTF-8，
+    # 否则中文 stderr（如「'tail' 不是内部或外部命令」）会变乱码，模型读不懂
+    env = _shell_env()
+    if sys.platform == "win32":
+        command = f"chcp 65001 >nul && {command}"
+
     try:
-        result = subprocess.run(
+        proc = await asyncio.create_subprocess_shell(
             command,
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            encoding="utf-8",
-            errors="replace",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+            start_new_session=True,   # POSIX：独立进程组，取消时整组杀
         )
-    except subprocess.TimeoutExpired as exc:
-        raise TimeoutError(f"命令超时（>{timeout}s）: {command[:120]}") from exc
-    output = (result.stdout or "")[:4000]
-    err = (result.stderr or "")[:2000]
-    return f"exit_code={result.returncode}\n[stdout]\n{output}\n[stderr]\n{err}"
+    except Exception as exc:
+        raise RuntimeError(f"命令启动失败：{type(exc).__name__}: {exc}") from exc
+
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        await _kill_process_tree(proc)
+        # 关键：超时**不能抛异常**。抛 TimeoutError 会被 ToolRetryMiddleware
+        # 当成瞬时故障重试 3 次（默认策略重试所有异常），再叠加模型看到失败
+        # 后的再次尝试——一条 timeout=240 的命令会被放大成几十分钟的等待
+        # （实测单次 1 秒的命令能跑出 16 次执行、40 秒总耗时）。
+        # 这里返回结构化结果，让模型看到"超时"并主动换方案。
+        return (f"exit_code=timeout\n[stdout]\n\n[stderr]\n"
+                f"命令执行超过 {timeout} 秒，已被强制终止（连同全部子进程）。\n"
+                f"这不是命令语法错误，而是时间上限。请换更快的做法：\n"
+                f"- 缩小处理范围，或拆成多条小命令分步执行；\n"
+                f"- 下载/安装类命令确认网络可用（可加 --quiet 减少输出）；\n"
+                f"- 若确实需要很久，先汇报当前进度，让用户决定是否继续。")
+    except asyncio.CancelledError:
+        # 用户点「停止」/任务取消：杀掉整棵进程树，绝不留孤儿子进程
+        await _kill_process_tree(proc)
+        raise
+
+    output = (stdout or b"")[:4000]
+    err = (stderr or b"")[:2000]
+    return (f"exit_code={proc.returncode}\n[stdout]\n"
+            f"{output.decode('utf-8', errors='replace')}\n"
+            f"[stderr]\n{err.decode('utf-8', errors='replace')}")
+
+
+async def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
+    """
+    杀掉子进程**整棵树**并收尸。
+
+    shell=True 启动的是 cmd.exe / bash，真正干活的命令（pip、python 等）
+    是它的子进程甚至孙进程——proc.kill() 只杀外壳，会留下孤儿进程继续
+    占用管道与资源。Windows 用 taskkill /F /T 杀树；POSIX 杀进程组
+    （create_subprocess_shell 时已开 start_new_session）。
+    """
+    if proc.returncode is not None:
+        return
+    try:
+        if sys.platform == "win32":
+            killer = await asyncio.create_subprocess_exec(
+                "taskkill", "/F", "/T", "/PID", str(proc.pid),
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+            try:
+                await asyncio.wait_for(killer.wait(), timeout=5)
+            except asyncio.TimeoutError:
+                killer.kill()
+        else:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                proc.kill()
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+    # 收尸：等进程真正退出，避免僵尸（有上限，别为收尸再卡住调用方）
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=5)
+    except Exception:
+        pass

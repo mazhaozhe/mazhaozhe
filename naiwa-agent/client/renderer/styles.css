@@ -43,6 +43,8 @@ html[data-theme="night"]{--page:#10191c;--text:#edf1e9;--text-strong:#f3f8f0;--m
 .process-item.reasoning:before{background:var(--yellow)}
 .process-item.tool_call:before{background:var(--accent-strong)}
 .process-item.tool_result:before{background:#62a272}
+.process-item.notice:before{background:var(--yellow)}
+.process-item.notice .process-text{color:var(--yellow)}
 .process-item.error:before{background:var(--danger)}
 .process-kind{display:block;margin-bottom:1px;color:var(--accent-strong);font-size:9px;font-weight:650;letter-spacing:.05em}
 .process-text{white-space:pre-wrap;overflow-wrap:anywhere}
@@ -92,3 +94,32 @@ html[data-theme="night"] .composer-wrap{background:linear-gradient(0deg,rgba(3,8
 @media(max-width:1020px){.sidebar{width:212px;flex-basis:212px;padding-left:10px;padding-right:10px}.titlebar-brand{width:212px}.new-chat-button kbd{display:none}.content-header{padding:0 22px}.welcome{padding-left:24px;padding-right:24px}.capability-grid{gap:8px}.capability-card{padding:13px}.journal-layout{grid-template-columns:1fr;padding:20px}.journal-archive{display:none}.model-picker select{max-width:135px}.settings-scroll{padding:20px}.composer-meta>span:last-child{display:none}}
 @media(max-height:760px){.welcome{padding-top:24px;padding-bottom:20px}.welcome-avatar{width:60px;height:60px;margin-bottom:12px}.welcome-avatar img{width:54px;height:54px}.welcome h2{font-size:25px}.capability-grid{margin-top:20px}.capability-card{min-height:112px}.welcome-note{margin-top:14px}.intro-stage{height:450px}.intro-character img{height:320px;width:230px}}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{scroll-behavior:auto!important}.intro-character,.speech,.laugh-text{animation-duration:.01ms!important;animation-delay:0ms!important}.intro-progress span{animation-duration:1s!important}.frog-character img{animation:none!important}}
+
+/* ---- 附件上传（文件 / 照片）---- */
+.composer-left{display:flex;align-items:center;gap:10px;min-width:0}
+.attach-button{width:32px;height:32px;flex:0 0 32px;display:grid;place-items:center;color:var(--muted)}
+.attach-button:hover{background:var(--accent-soft);color:var(--accent-strong)}
+.attach-button svg{width:16px;height:16px}
+.attachment-tray{display:flex;flex-wrap:wrap;gap:7px;margin:0 2px 8px}
+.attachment-chip{display:flex;align-items:center;gap:7px;max-width:235px;padding:4px 5px;border:1px solid var(--border);border-radius:9px;background:var(--panel-soft);font-size:10px;animation:messageIn .2s}
+.attachment-chip .chip-thumb{width:26px;height:26px;flex:0 0 26px;border-radius:5px;object-fit:cover;background:var(--code-bg)}
+.attachment-chip .chip-icon{width:26px;height:26px;flex:0 0 26px;display:grid;place-items:center;border-radius:5px;background:var(--accent-soft);color:var(--accent-strong);font-size:9px;font-weight:700}
+.attachment-chip .chip-text{min-width:0;display:flex;flex-direction:column;line-height:1.35}
+.attachment-chip .chip-name{max-width:135px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:650}
+.attachment-chip .chip-size{color:var(--subtle);font-size:9px}
+.attachment-chip .chip-remove{flex:0 0 auto;width:18px;height:18px;display:grid;place-items:center;border:0;border-radius:5px;background:transparent;color:var(--subtle);font-size:13px;line-height:1;padding:0}
+.attachment-chip .chip-remove:hover{color:var(--danger);background:var(--accent-faint)}
+.attachment-warning{flex-basis:100%;padding:1px 2px;color:var(--danger);font-size:9px;font-weight:650}
+.composer.drag-active{border-color:var(--accent);border-style:dashed;background:var(--accent-faint)}
+.stop-button{background:var(--danger);color:var(--panel-solid)}
+.stop-button:hover{background:var(--danger);filter:brightness(.93)}
+html[data-theme="night"] .stop-button{color:#1d2a21}
+/* 历史消息里的附件 chips（可点击打开本机文件） */
+.message-attachments{display:flex;flex-wrap:wrap;gap:6px;margin-top:7px}
+.message-row.user .message-attachments{justify-content:flex-end}
+.msg-attach-chip{display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border-radius:7px;background:var(--accent-faint);color:var(--accent-strong);font-size:9px;font-weight:650;cursor:pointer;transition:.15s}
+.msg-attach-chip:hover{filter:brightness(.96);text-decoration:underline}
+.message-row.user .msg-attach-chip{background:rgba(255,255,255,.16);color:inherit}
+/* 模型卡片上的“视觉”徽标 */
+.model-kind.vision{background:rgba(237,189,85,.18);color:#8a6a1f}
+html[data-theme="night"] .model-kind.vision{background:rgba(231,190,104,.16);color:var(--yellow)}

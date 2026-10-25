@@ -20,8 +20,14 @@ const state = {
   streamElement: null,
   journalEntries: [],
   journalId: null,
-  toastTimer: null
+  toastTimer: null,
+  attachments: [],        // 待发送附件：[{uploadId,name,size,mime,kind,isImage,preview}]
+  runTimer: null,         // 任务看门狗定时器（后端超时前的双保险）
+  toolTimer: null,        // 当前工具调用的计时器（让长时间命令有可见进度）
+  runTimeoutSeconds: 900  // 后端单任务硬超时（health 接口下发）
 };
+
+const MAX_ATTACHMENTS = 9;
 
 const welcomeHTML = $('#welcome').outerHTML;
 
@@ -37,6 +43,146 @@ function toast(message, error = false) {
 function localDate() {
   const date = new Date();
   return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+}
+
+function formatSize(bytes) {
+  const size = Number(bytes) || 0;
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / 1024 / 1024).toFixed(1)} MB`;
+}
+
+// ---------------------------------------------------------------------------
+// 附件上传：按钮选择 / 拖拽 / 粘贴 → upload_file 暂存 → chips → 随消息发送
+// ---------------------------------------------------------------------------
+function currentModelSupportsVision() {
+  return Boolean(state.currentModel && state.currentModel.supports_vision);
+}
+
+function renderAttachments() {
+  const tray = $('#attachmentTray');
+  if (!tray) return;
+  tray.replaceChildren();
+  if (!state.attachments.length) {
+    tray.classList.add('hidden');
+    return;
+  }
+  tray.classList.remove('hidden');
+  for (const item of state.attachments) {
+    const chip = document.createElement('div');
+    chip.className = 'attachment-chip';
+    chip.dataset.uploadId = item.uploadId;
+    if (item.isImage && item.preview) {
+      const thumb = document.createElement('img');
+      thumb.className = 'chip-thumb';
+      thumb.src = item.preview;
+      thumb.alt = item.name;
+      chip.append(thumb);
+    } else {
+      const icon = document.createElement('span');
+      icon.className = 'chip-icon';
+      icon.textContent = item.isImage ? '图' : '档';
+      chip.append(icon);
+    }
+    const text = document.createElement('div');
+    text.className = 'chip-text';
+    const name = document.createElement('span');
+    name.className = 'chip-name';
+    name.textContent = item.name;
+    name.title = item.name;
+    const size = document.createElement('span');
+    size.className = 'chip-size';
+    size.textContent = formatSize(item.size);
+    text.append(name, size);
+    const remove = document.createElement('button');
+    remove.className = 'chip-remove';
+    remove.type = 'button';
+    remove.textContent = '×';
+    remove.title = '移除附件';
+    remove.addEventListener('click', () => removeAttachment(item.uploadId));
+    chip.append(text, remove);
+    tray.append(chip);
+  }
+  // 有照片但当前模型不支持视觉：明确告知发送后只会得到"无法识别"提示
+  if (state.attachments.some((item) => item.isImage) && !currentModelSupportsVision()) {
+    const warning = document.createElement('div');
+    warning.className = 'attachment-warning';
+    warning.textContent = '当前模型不支持图片识别，发送后将提示"模型无法识别该照片"';
+    tray.append(warning);
+  }
+}
+
+function readFileAsDataURL(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(new Error('读取文件内容失败'));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function attachFiles(files) {
+  const incoming = [...(files || [])].filter(Boolean);
+  if (!incoming.length) return;
+  if (state.attachments.length + incoming.length > MAX_ATTACHMENTS) {
+    toast(`一次最多上传 ${MAX_ATTACHMENTS} 个附件`, true);
+    return;
+  }
+  for (const file of incoming) {
+    try {
+      let preview = '';
+      let params;
+      let path = '';
+      try { path = window.naiwa.getPathForFile(file) || ''; } catch { path = ''; }
+      if (path) {
+        params = { path, name: file.name, mime: file.type || '' };
+        if ((file.type || '').startsWith('image/')) preview = await readFileAsDataURL(file);
+      } else {
+        // 拿不到本机路径（如剪贴板构造的文件）：base64 兜底
+        const dataUrl = await readFileAsDataURL(file);
+        if ((file.type || '').startsWith('image/')) preview = dataUrl;
+        params = { dataBase64: dataUrl.split(',')[1] || '', name: file.name, mime: file.type || '' };
+      }
+      const upload = await window.naiwa.request('upload_file', params);
+      state.attachments.push({ ...upload, preview });
+      renderAttachments();
+    } catch (error) {
+      toast(`上传失败：${file.name}（${error.message}）`, true);
+    }
+  }
+}
+
+async function removeAttachment(uploadId) {
+  state.attachments = state.attachments.filter((item) => item.uploadId !== uploadId);
+  renderAttachments();
+  try { await window.naiwa.request('discard_upload', { uploadId }); } catch {}
+}
+
+async function clearAttachments() {
+  const pending = state.attachments.map((item) => item.uploadId);
+  state.attachments = [];
+  renderAttachments();
+  for (const uploadId of pending) {
+    try { await window.naiwa.request('discard_upload', { uploadId }); } catch {}
+  }
+}
+
+function attachmentChipsElement(attachments) {
+  const wrap = document.createElement('div');
+  wrap.className = 'message-attachments';
+  for (const file of attachments || []) {
+    const chip = document.createElement('span');
+    chip.className = 'msg-attach-chip';
+    chip.textContent = `${file.isImage ? '图片' : '文件'} ${file.name}（${formatSize(file.size || 0)}）`;
+    chip.title = file.path ? '点击打开本地文件' : file.name;
+    if (file.path) {
+      chip.addEventListener('click', () => {
+        window.naiwa.openPath(file.path).catch(() => toast('打开文件失败', true));
+      });
+    }
+    wrap.append(chip);
+  }
+  return wrap;
 }
 
 function formatTime(value) {
@@ -143,7 +289,8 @@ const PROCESS_KIND_LABELS = {
   think: '思考',
   reasoning: '深度推理',
   tool_call: '调用工具',
-  tool_result: '工具返回'
+  tool_result: '工具返回',
+  notice: '系统'
 };
 
 // 与后端 agent/ui.py 的 strip_thinking 对齐：模型按提示词约定用【结果】标注
@@ -308,7 +455,7 @@ function processBoxElement(process, options = {}) {
   return { box, body, count, arrow };
 }
 
-function messageElement(role, content, time, usage, process) {
+function messageElement(role, content, time, usage, process, attachments) {
   const row = document.createElement('div');
   row.className = `message-row ${role}`;
   const avatar = document.createElement('div');
@@ -343,6 +490,10 @@ function messageElement(role, content, time, usage, process) {
     body.append(processBoxElement(process).box);
   }
   body.append(text);
+  // 用户消息的附件 chips（图片/文件名 + 大小，点击可打开本机文件）
+  if (role === 'user' && Array.isArray(attachments) && attachments.length) {
+    body.append(attachmentChipsElement(attachments));
+  }
   if (usage) {
     const usageEl = document.createElement('div');
     usageEl.className = 'message-usage';
@@ -353,7 +504,7 @@ function messageElement(role, content, time, usage, process) {
   return { row, text, body };
 }
 
-function appendMessage(role, content, time, usage) {
+function appendMessage(role, content, time, usage, attachments) {
   let list = $('.message-list');
   if (!list) {
     $('#messages').replaceChildren();
@@ -361,7 +512,7 @@ function appendMessage(role, content, time, usage) {
     list.className = 'message-list';
     $('#messages').append(list);
   }
-  const item = messageElement(role, content, time, usage);
+  const item = messageElement(role, content, time, usage, null, attachments);
   list.append(item.row);
   scrollMessages();
   return item;
@@ -382,7 +533,7 @@ function renderSession(session) {
     list.className = 'message-list';
     $('#messages').append(list);
     for (const message of session.messages) {
-      const item = messageElement(message.role, message.content, message.time, null, message.process);
+      const item = messageElement(message.role, message.content, message.time, null, message.process, message.attachments);
       list.append(item.row);
     }
   }
@@ -406,14 +557,27 @@ async function selectSession(sessionId) {
 
 async function newChat() {
   if (state.sending) {
-    toast('当前任务还在运行，请先等待完成');
-    return;
+    // 历史 bug：任务卡死时 newChat 被 guard 拦死，输入框永远 disabled。
+    // 现在允许"停止当前任务并开新对话"，停止确认后继续。
+    const confirmed = confirm('当前任务还在运行。\n停止当前任务并开启新对话？（未完成的部分回答会丢失）');
+    if (!confirmed) return;
+    await cancelRun();
+    // 等后端确认取消（send_message 以 {cancelled:true} 收尾），最多 5 秒
+    for (let i = 0; i < 50 && state.sending; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    if (state.sending) {
+      toast('停止确认超时，请稍候再试', true);
+      return;
+    }
   }
   try {
     const session = await window.naiwa.request('new_session');
     await refreshSessions();
     renderSession(session);
     switchView('chat');
+    // 双保险：无论之前发生过什么，新对话的输入框必须立即可用
+    setRunning(false);
     $('#messageInput').focus();
   } catch (error) { toast(error.message, true); }
 }
@@ -462,6 +626,13 @@ function renderModels() {
     const description = document.createElement('p');
     description.textContent = model.description || (model.supports_tools ? '支持 Agent 工具调用' : '仅支持对话');
     card.append(top, description);
+    if (model.supports_vision) {
+      const vision = document.createElement('span');
+      vision.className = 'model-kind vision';
+      vision.textContent = '视觉';
+      vision.title = '支持图片（多模态）输入';
+      top.append(vision);
+    }
     card.addEventListener('click', () => selectModel(model.id));
     grid.append(card);
   }
@@ -474,6 +645,7 @@ function updateCurrentModel(model) {
   $('#composerModel').textContent = name;
   $('#runModelName').textContent = model && model.id ? name : '尚未配置';
   if ($('#headerModelSelect').value !== (model.id || '')) $('#headerModelSelect').value = model.id || '';
+  renderAttachments();   // 模型切换后刷新"不支持图片识别"提示
 }
 
 async function loadModels(provider = state.provider) {
@@ -542,7 +714,23 @@ function setRunning(running) {
   $('#runState').textContent = running ? '执行中' : '待命中';
   $('#runState').classList.toggle('running', running);
   $('#sendButton').disabled = running;
+  $('#sendButton').classList.toggle('hidden', running);
+  $('#stopButton').classList.toggle('hidden', !running);
   $('#messageInput').disabled = running;
+}
+
+// 停止当前任务：通知后端取消；UI 状态由 send_message 的 {cancelled:true} 响应收尾
+async function cancelRun() {
+  if (state.runTimer) {
+    clearTimeout(state.runTimer);
+    state.runTimer = null;
+  }
+  if (!state.sending || !state.sessionId) return;
+  try {
+    await window.naiwa.request('cancel', { sessionId: state.sessionId });
+  } catch (error) {
+    toast(`停止失败：${error.message}`, true);
+  }
 }
 
 function addTrace(type, title, detail = '', isError = false) {
@@ -591,13 +779,14 @@ function updateUsage(sessionUsage, turnUsage) {
 async function sendMessage() {
   const input = $('#messageInput');
   const message = input.value.trim();
-  if (!message || state.sending) return;
+  if ((!message && !state.attachments.length) || state.sending) return;
   if (!state.configured) {
     switchView('settings');
     toast('先配置 API Key 并获取模型，再开始对话');
     return;
   }
   if (!state.sessionId) await newChat();
+  if (!state.sessionId) return;   // 新建会话失败：保持原状（含附件），不进入发送态
   const sessionId = state.sessionId;
   state.sending = true;
   setRunning(true);
@@ -605,24 +794,51 @@ async function sendMessage() {
   input.style.height = 'auto';
   clearTrace();
   $('#estimateBar').classList.add('hidden');
-  appendMessage('user', message, new Date().toISOString());
+  const attachments = state.attachments.map((item) => ({
+    uploadId: item.uploadId, name: item.name, mime: item.mime, size: item.size
+  }));
+  state.attachments = [];
+  renderAttachments();
+  appendMessage('user', message || `（发送 ${attachments.length} 个附件）`,
+    new Date().toISOString(), null, attachments);
   state.streamElement = appendMessage('assistant', '', new Date().toISOString());
   state.streamElement.text.classList.add('pending');
   // 思考与行动过程框：流式期间展开并实时跟进，完成后自动收起，答案独立呈现。
   const process = processBoxElement([], { running: true });
   state.streamElement.body.insertBefore(process.box, state.streamElement.text);
   state.streamElement.process = process;
-  addTrace('任务', '奶蛙已接收任务', message.slice(0, 180));
+  addTrace('任务', '奶蛙已接收任务', (message || '（仅附件）').slice(0, 180));
+  // 看门狗：后端硬超时之外的双保险，确保任何情况下输入框都不会被永久锁死
+  state.runTimer = setTimeout(() => cancelRun(), (state.runTimeoutSeconds + 120) * 1000);
   try {
-    const result = await window.naiwa.request('send_message', { sessionId, message });
-    state.streamElement.text.innerHTML = renderMarkdown(result.answer || '');
-    state.streamElement.text.classList.remove('pending');
-    finishStreamProcess();
-    updateUsage(result.sessionUsage, result.usage);
-    await refreshSessions();
-    const current = state.sessions.find((session) => session.id === sessionId);
-    if (current) $('#chatTitle').textContent = current.title;
-    addTrace('完成', '任务执行完成', '最终回答已写入当前对话');
+    const result = await window.naiwa.request('send_message', { sessionId, message, attachments });
+    if (result.cancelled) {
+      // 手动停止 / 超时取消：UI 恢复，答案不落库（用户消息已由后端保存）
+      const timeout = result.reason === 'timeout';
+      state.streamElement.text.classList.remove('pending');
+      state.streamElement.text.textContent = timeout
+        ? `任务超时（${state.runTimeoutSeconds} 秒）已自动停止，输入框已恢复，可重试。`
+        : '任务已手动停止。';
+      state.streamElement.row.classList.add('error');
+      finishStreamProcess();
+      addTrace(timeout ? '超时' : '停止',
+        timeout ? '任务超时已停止' : '任务已手动停止',
+        timeout ? `超过 ${state.runTimeoutSeconds} 秒未完成，已自动取消` : '用户手动停止了当前任务', true);
+      await refreshSessions().catch(() => {});
+      const stopped = state.sessions.find((session) => session.id === sessionId);
+      if (stopped) $('#chatTitle').textContent = stopped.title;
+    } else {
+      state.streamElement.text.innerHTML = renderMarkdown(result.answer || '');
+      state.streamElement.text.classList.remove('pending');
+      finishStreamProcess();
+      updateUsage(result.sessionUsage, result.usage);
+      await refreshSessions();
+      const current = state.sessions.find((session) => session.id === sessionId);
+      if (current) $('#chatTitle').textContent = current.title;
+      addTrace('完成', '任务执行完成', result.visionUnsupported
+        ? '当前模型不支持图片识别，已返回降级提示（未调用模型）'
+        : '最终回答已写入当前对话');
+    }
   } catch (error) {
     state.streamElement.row.classList.add('error');
     state.streamElement.text.textContent = `任务未完成：${error.message}`;
@@ -631,13 +847,47 @@ async function sendMessage() {
     addTrace('错误', '任务执行失败', error.message, true);
     await refreshSessions().catch(() => {});
   } finally {
+    if (state.runTimer) {
+      clearTimeout(state.runTimer);
+      state.runTimer = null;
+    }
     state.sending = false;
     state.streamElement = null;
+    stopToolTimer();
     setRunning(false);
     $('#estimateBar').classList.add('hidden');
     input.focus();
     scrollMessages();
   }
+}
+
+// 工具调用计时：pip install / 跑测试这类命令常要几十秒，过程框若一直静止
+// 用户会以为卡死。每秒把已用时间挂在工具名后面，收到 tool_result 立刻停表。
+// 超过 30 秒补一句提示——长命令是正常现象，也可以点「停止」中断。
+function startToolTimer(item, name) {
+  stopToolTimer();
+  const label = item && item.querySelector('.process-kind');
+  if (!label) return;
+  const base = label.dataset.base || label.textContent;
+  label.dataset.base = base;
+  const started = Date.now();
+  const tick = () => {
+    const seconds = Math.round((Date.now() - started) / 1000);
+    label.textContent = seconds >= 30
+      ? `${base} · ${seconds}s（较慢，可点「停止」中断）`
+      : `${base} · ${seconds}s`;
+  };
+  tick();
+  state.toolTimer = setInterval(tick, 1000);
+}
+
+function stopToolTimer() {
+  if (state.toolTimer) clearInterval(state.toolTimer);
+  state.toolTimer = null;
+  // 计时文字挂在「调用工具 · 名字」这个 label 上：摘掉后缀恢复原样
+  document.querySelectorAll('.process-item.tool_call .process-kind').forEach((el) => {
+    if (el.dataset.base) el.textContent = el.dataset.base;
+  });
 }
 
 // 流式过程条目进入当前消息的过程框：连续的同类文本合并为一条，避免碎片节点。
@@ -661,7 +911,9 @@ function appendProcessEntry(entry) {
     let args = entry.args || '';
     try { args = JSON.stringify(JSON.parse(entry.args), null, 2); } catch { args = String(entry.args || ''); }
     addTrace('调用工具', entry.name || '未知工具', String(args).slice(0, 1200));
+    startToolTimer(process.body.lastElementChild, entry.name);
   } else if (kind === 'tool_result') {
+    stopToolTimer();
     addTrace(entry.status === 'success' ? '工具完成' : '工具异常', entry.name || '工具', entry.text || '', entry.status !== 'success');
   }
 }
@@ -669,9 +921,19 @@ function appendProcessEntry(entry) {
 function finishStreamProcess() {
   const process = state.streamElement && state.streamElement.process;
   if (!process) return;
+  stopToolTimer();
   process.box.classList.remove('running');
   process.box.classList.add('collapsed');
   process.arrow.textContent = '▸';
+}
+
+// 清空当前消息的过程框（后端判定输出退化后重跑时用）
+function clearStreamProcess() {
+  const process = state.streamElement && state.streamElement.process;
+  if (!process) return;
+  stopToolTimer();
+  process.body.replaceChildren();
+  process.count.textContent = '0 步';
 }
 
 function handleAgentEvent(event) {
@@ -683,6 +945,10 @@ function handleAgentEvent(event) {
   if (event.sessionId && event.sessionId !== state.sessionId) return;
   if (event.type === 'process') {
     appendProcessEntry(event);
+  } else if (event.type === 'process_reset') {
+    // 后端判定本轮输出退化（复读成「好。执行。好。执行。」）并中止／重跑：
+    // 已推过来的垃圾思考没有保留价值，清空过程框，只留重跑后的干净内容。
+    clearStreamProcess();
   } else if (event.type === 'estimate') {
     const estimate = event.estimate;
     $('#estimateBar').textContent = `预计约 ${(estimate.total_tokens || 0).toLocaleString()} tokens · ${estimate.expected_calls || 1} 次模型调用`;
@@ -813,6 +1079,53 @@ function bindEvents() {
   $('#newChatTop').addEventListener('click', newChat);
   $('#newChatHeader').addEventListener('click', newChat);
   $('#sendButton').addEventListener('click', sendMessage);
+  $('#stopButton').addEventListener('click', () => cancelRun());
+  $('#attachButton').addEventListener('click', () => $('#fileInput').click());
+  $('#fileInput').addEventListener('change', (event) => {
+    attachFiles(event.target.files);
+    event.target.value = '';   // 清空，允许再次选择同一文件
+  });
+  // 粘贴上传：剪贴板里的图片/文件直接作为附件
+  $('#messageInput').addEventListener('paste', (event) => {
+    const files = event.clipboardData && event.clipboardData.files;
+    if (files && files.length) {
+      event.preventDefault();
+      attachFiles(files);
+    }
+  });
+  // 拖拽上传：整个对话区可放；preventDefault 防止 Electron 把文件当导航打开
+  const chatView = $('#chatView');
+  let dragDepth = 0;
+  const hasFiles = (event) => Boolean(event.dataTransfer) &&
+    [...event.dataTransfer.types].includes('Files');
+  chatView.addEventListener('dragenter', (event) => {
+    if (!hasFiles(event)) return;
+    event.preventDefault();
+    dragDepth += 1;
+    $('#composer').classList.add('drag-active');
+  });
+  chatView.addEventListener('dragover', (event) => {
+    if (!hasFiles(event)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+  });
+  chatView.addEventListener('dragleave', (event) => {
+    event.preventDefault();
+    dragDepth = Math.max(dragDepth - 1, 0);
+    if (!dragDepth) $('#composer').classList.remove('drag-active');
+  });
+  chatView.addEventListener('drop', (event) => {
+    event.preventDefault();
+    dragDepth = 0;
+    $('#composer').classList.remove('drag-active');
+    const files = event.dataTransfer && event.dataTransfer.files;
+    if (files && files.length) {
+      switchView('chat');
+      attachFiles(files);
+    }
+  });
+  document.addEventListener('dragover', (event) => event.preventDefault());
+  document.addEventListener('drop', (event) => event.preventDefault());
   $('#messageInput').addEventListener('input', (event) => {
     event.target.style.height = 'auto';
     event.target.style.height = `${Math.min(event.target.scrollHeight, 130)}px`;
@@ -900,6 +1213,7 @@ async function init() {
     }
     const health = await window.naiwa.request('health');
     $('#toolCount').textContent = health.tools || '—';
+    state.runTimeoutSeconds = health.run_timeout_seconds || 900;
     $('#backendStatus').textContent = '本地 Agent 已连接';
     $('#backendDot').className = 'status-pulse ready';
     await refreshSessions();

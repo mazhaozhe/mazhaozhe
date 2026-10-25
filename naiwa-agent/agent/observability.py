@@ -50,6 +50,12 @@ def setup_logging() -> logging.Logger:
 logger = logging.getLogger("agent")
 
 
+def _is_orphan_error(exc: BaseException) -> bool:
+    """判断异常是否是"孤儿 tool_calls"导致的接口 400（延迟导入避免成环）。"""
+    from agent.history_repair import looks_like_orphan_error
+    return looks_like_orphan_error(exc)
+
+
 def log_step(step: str, **fields) -> None:
     """记录一个 ReAct 步骤为 JSON 行（工具名、参数、结果摘要等）。"""
     entry = {"ts": datetime.now().isoformat(timespec="seconds"), "step": step, **fields}
@@ -73,6 +79,11 @@ async def stream_run(agent, message: str, thread_id: str) -> None:
     """
     config = {"configurable": {"thread_id": thread_id}}
     log_step("user_input", thread_id=thread_id, message=message[:300])
+    # 历史修复：上一轮被 Ctrl+C / 异常中断可能留下"孤儿 tool_calls"
+    # （assistant 声明了工具调用但没有 tool 回复），带着它请求模型会被
+    # 接口 400 拒绝，且错误会自我延续。开跑前先修一遍（幂等）。
+    from agent.history_repair import repair_history
+    await repair_history(agent, thread_id)
 
     ui = RunUI(thread_id, message)
     answer = ""
@@ -124,11 +135,22 @@ async def stream_run(agent, message: str, thread_id: str) -> None:
                                      result=str(getattr(msg, "content", "")))
         ui.finish(answer)
     except KeyboardInterrupt:
+        # Ctrl+C 中断同样可能留下孤儿 tool_calls，修掉再退出，别把坏历史
+        # 留给下一轮（下一轮开跑前虽然也会修，这里双保险）
+        from agent.history_repair import repair_history
+        await repair_history(agent, thread_id)
         ui.fail("[中断] 用户终止了本轮任务。")
         log_step("interrupted", thread_id=thread_id)
     except Exception as exc:  # 兜底：任何未预期异常都反馈给用户而不是崩溃
-        ui.fail(f"[错误] Agent 运行异常: {type(exc).__name__}: {exc}\n"
-                f"      请查看日志 data/agent.log 了解详情。")
-        log_step("error", error=f"{type(exc).__name__}: {exc}")
+        if _is_orphan_error(exc):
+            # 极端边角：开跑前的修复没兜住，这里补修一次并引导重新输入
+            from agent.history_repair import repair_history
+            await repair_history(agent, thread_id)
+            ui.fail("[错误] 检测到会话历史记录异常，已自动修复，请重新输入。")
+            log_step("history_repaired_after_error", thread_id=thread_id)
+        else:
+            ui.fail(f"[错误] Agent 运行异常: {type(exc).__name__}: {exc}\n"
+                    f"      请查看日志 data/agent.log 了解详情。")
+            log_step("error", error=f"{type(exc).__name__}: {exc}")
     finally:
         ui.close()

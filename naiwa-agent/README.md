@@ -43,6 +43,7 @@
 | 双层缓存 | 相同模型请求零 token 复现；幂等工具结果 TTL 缓存 |
 | 安全阀 | 模型/工具调用次数上限、限流（频率+并发）、危险命令黑名单、凭据自动掩码 |
 | 可观测 | 每个 ReAct 步骤结构化落盘（`data/agent.log`），`/trace` 一键回看全过程 |
+| 附件上传 | 客户端支持上传文件/照片（按钮、拖拽、粘贴）；文本自动摘录，docx/xlsx/pptx 抽内容；照片走多模态，模型不支持视觉时明确提示"模型无法识别" |
 | 桌面客户端 | Electron 桌面端「奶蛙 Agent」：动画开场、昼夜主题、多会话、工作日记、Key 加密存储 |
 
 ---
@@ -141,12 +142,18 @@ npm start          # 或双击 client\start.bat（会自动检查依赖）
 |------|--------|------|
 | `MAIN_MODEL` / `REASONER_MODEL` | `deepseek-chat` / `deepseek-reasoner` | 对话 / 推理模型 |
 | `TEMPERATURE` | `0.2` | 工具场景建议低温，减少幻觉 |
+| `FREQUENCY_PENALTY` / `PRESENCE_PENALTY` | `0.3` / `0.1` | 反"复读机"采样参数（`0`~`2`，`0` = 关闭）：压制「好。执行。好。执行。」这类重复退化 |
 | `MODEL_RUN_LIMIT` | `60` | 单次任务最大模型调用数（安全阀） |
 | `TOOL_RUN_LIMIT` | `100` | 单次任务最大工具调用数（安全阀） |
-| `TOOL_RETRIES` | `3` | 工具失败自动重试次数（指数退避） |
+| `TOOL_RETRIES` | `3` | 工具失败自动重试次数（只重试网络类异常，命令超时/参数错误不重试） |
 | `CALLS_PER_MINUTE` / `MAX_CONCURRENCY` | `60` / `4` | 限流：频率 / 并发 |
 | `SUMMARIZE_TRIGGER_TOKENS` | `16000` | 窗口未知模型的压缩兜底阈值 |
 | `SUMMARIZE_KEEP_MESSAGES` | `20` | 压缩时保留最近多少条原文 |
+| `UPLOAD_DIR` / `UPLOAD_MAX_MB` | `data/uploads` / `10` | 客户端附件目录（staging 暂存 + 会话归档）/ 单附件大小上限 |
+| `UPLOAD_TEXT_CHARS` | `20000` | 文本类附件注入对话的最大字符数（超出截断） |
+| `VISION_PATTERNS` | `vl,vision,qvq,4o,...` | 模型 id 命中这些子串视为"支持图片输入"；也可在 `config/models.json` 里显式写 `supports_vision` |
+| `RUN_TIMEOUT_SECONDS` | `900` | 单次任务硬超时：模型接口挂起时自动取消，客户端输入框立即恢复；`0` = 不限制 |
+| `DEGENERATE_GUARD` / `DEGENERATE_RETRY` | `true` / `1` | 输出退化护栏：检出重复循环立刻中止生成省下 token；中止后自动重试一轮（`0` = 不重试） |
 | `RAG_ENABLED` | `false` | 知识库开关（需装 `requirements-rag.txt`） |
 
 模型目录在 `config/models.json` 维护：窗口大小、输出上限、价格（元/百万 token）、密钥环境变量名都在里面，**加新模型只改 JSON，不用改代码**，`/reload-models` 热重载生效。
@@ -316,7 +323,7 @@ python examples/snake/snake_game.py     # tkinter 版，零第三方依赖
 pytest tests/ -v
 ```
 
-当前 **125 个测试全部通过**，覆盖：工具注册与模糊匹配（防幻觉）、文件读写与危险命令拦截、文档生成、缓存命中与过期、配置校验、模型目录与自动发现、token 预估/实耗/偏差、上下文压缩预算、过程框 UI 等。
+当前 **221 个测试全部通过**，覆盖：工具注册与模糊匹配（防幻觉）、文件读写与危险命令拦截、文档生成、缓存命中与过期、配置校验、模型目录与自动发现（含视觉能力猜测）、token 预估/实耗/偏差、上下文压缩预算、过程框 UI、附件上传全链路（暂存/归档/摘录/多模态组装/降级消息）、"孤儿 tool_calls"历史修复（纯函数 + 假 agent + 真 LangGraph/SQLite 状态机 + 自愈重试 + cancel 兜底）、Shell 工具异步化（venv 环境注入 + 取消/超时杀进程树，单元 + 真 LangGraph 全链路）、联网搜索多源级联（天气/通用/兜底 + 熔断冷却 + 失败不缓存）与桥接层集成（假 agent）等。
 
 ---
 
@@ -355,6 +362,46 @@ Windows 老终端编码问题，用 Windows Terminal 或先 `chcp 65001`。
 **Q11：桌面客户端启动报"未找到项目 .venv"**
 客户端复用根目录虚拟环境，先完成 CLI 版安装（`python -m venv .venv && pip install -r requirements.txt`），再进 `client/` 执行 `npm install && npm start`。
 
+**Q12：开启新对话后输入框点不动 / 打不了字**
+旧版本在模型接口挂起时会出现这个现象（任务永远"执行中"，输入框被锁死）。现已修复：客户端有「停止」按钮可随时中断任务；`开启新对话` 会先停止当前任务再继续；后端有 `RUN_TIMEOUT_SECONDS`（默认 900 秒）硬超时。三重保障下输入框不会再被永久锁死。若仍遇到，一般是后端进程已退出——看左下角状态点是否变红，重启客户端即可。
+
+**Q13：上传照片后提示"模型无法识别该照片"**
+当前模型不支持视觉输入（如 DeepSeek 全系、qwen-plus、kimi-k2 都是纯文本模型）。照片本身已保存到 `data/uploads/<会话>/`，切换到支持视觉的模型（如 `qwen-vl-plus`，模型卡片带"视觉"徽标）后重试即可；也可以把图片里的文字描述给 Agent。
+
+**Q14：任务停止后再发消息，报 400 "tool_calls must be followed by tool messages"**
+任务执行中被手动停止 / 超时取消时，模型已发起的工具调用（`tool_calls`）可能写进了会话记忆，但工具回复还没落库，下一轮带着这段历史请求接口就会被 400 拒绝（且错误会自我延续）。现已自动修复：每次发送前会扫描并清理这类"孤儿 tool_calls"（`agent/history_repair.py`），停止任务时也会顺手清一次；万一仍有漏网的，接口报 400 后会自动修复并重试一轮。**遇到这个报错直接重发一次即可**，历史已损坏到修不回来的会话（极少见）建议删掉重建。
+
+**Q15：执行 Shell 命令时"卡住"，或点了停止命令还在后台跑**
+旧版有三个问题叠加，现已全部修复：
+
+1. **同步 `subprocess.run` 无法取消**——LangGraph 会把它丢进线程池，点「停止」杀不掉线程里的子进程，`pip install` 顶着超时继续跑。现改为**异步子进程**（`asyncio.create_subprocess_shell`），停止/超时都会杀掉整棵进程树（Windows `taskkill /T`，含 cmd 的子孙进程），秒级生效。
+2. **失败被重试放大 16 倍**——`ToolRetryMiddleware` 默认重试所有异常，命令超时会被重试 3 次，模型再重试几轮：一条 `timeout=240` 的命令最坏要等 **1 小时以上**（实测单次 1 秒的命令跑出 16 次执行、40 秒）。现在重试策略只针对网络类异常，**命令超时改为返回结果而不是抛异常**（模型看到"超时"会主动换方案），一次超时最多等一个 `timeout`。
+3. **`python` / `pip` 指向了别的环境**——`run_shell` 现在把项目 `.venv` 放到 PATH 最前，模型 `pip install` 装完当前 Agent 立即可用（之前装进系统 Python，Agent 永远用不上，于是反复装、反复失败）。
+
+另外：Windows 上自动切 UTF-8 代码页（中文报错不再乱码）；过程框会给正在执行的工具显示「执行中 Ns」，超过 30 秒提示可点「停止」，不会再像卡死。
+
+**Q16：Agent 说"搜索服务已熔断"或"连查天气都不行"**
+旧版搜索只依赖 DuckDuckGo 即时问答接口，**中国大陆网络下不可达**（实测 10 秒超时），连续失败两次就触发熔断，而且熔断状态只能靠重启客户端恢复——所以会出现"一开始还能查，后来什么都查不了"。现在已重构为多源级联：
+
+- **天气类查询**（含"天气/气温/下雨/多少度"等词）→ 直接用 Open-Meteo 结构化数据（免费、无需 Key、国内可直连），返回实况温度、体感、湿度、风速、今日高低温与降水概率；
+- **其他查询** → Bing 中国站 RSS（无需 Key、结构稳定），解析标题/链接/摘要；
+- **兜底** → DuckDuckGo（开代理时才有用）；
+- **熔断改为 60 秒冷却自动恢复**，失败说明文本也不再进缓存（之前会把坏结果缓存 10 分钟，网络好了还返回旧的）。
+
+如果仍看到熔断提示，等 1 分钟会自动恢复；想立刻恢复可重启客户端。
+
+**Q17：Agent 陷入「好。执行。好。执行。」的复读循环，一次烧掉 3 万多 tokens 还什么都没做**
+这是 LLM 的**神经文本退化**（neural text degeneration）：模型卡在"该选 A 还是 B""到底要不要执行"的决策瘫痪里，自回归输出退化成短句循环。实测一次回复 **17,193 字符**——「执行」出现 935 次、「好」1,234 次，**2,570 行里只有 149 种**，直到把 `max_tokens` 烧光，实耗 34,480 tokens，而且**一个工具都没调用**。更糟的是这段垃圾会进会话历史，下一轮又被完整喂回模型，**自我强化**。
+
+现已部署四道防线：
+
+1. **采样层**：`FREQUENCY_PENALTY=0.3` 按词频惩罚已出现过的 token，从源头降低重复概率（推理型模型自动跳过该参数）；
+2. **提示层**：准则 4.5「禁止决策瘫痪」——多个方案都低风险可逆时直接选一个执行，**任何情况下都不要连续两次只输出文字而不调用工具**；
+3. **流式层**：生成过程中实时检测（4-gram 多样性塌缩 + 严格周期重复双判据），一旦命中**立刻中止生成**并清空过程框。实测在 6,920 字符处掐断，省下 60% 输出 token；
+4. **历史层**：已膨胀的退化消息会在发送前自动截断（`agent/history_repair.py`），客户端启动时也会一次性清理旧会话里的这类回复。
+
+中止后默认自动重试一轮，并附上一句「不要再权衡，立刻调用工具把事做完」的纠正指令——实测能直接拿到正常结果。若不想要重试就设 `DEGENERATE_RETRY=0`；想完全关掉护栏设 `DEGENERATE_GUARD=false`（不建议，一次退化就白烧几万 token）。
+
 ---
 
 ## 十四、项目结构
@@ -368,22 +415,25 @@ GeneralTaskAgent/
 │   ├── core.py               #   Agent 组装（中间件链，项目心脏）
 │   ├── models.py             #   模型管理器（多供应商 + 自动发现 + 语义化异常）
 │   ├── config.py             #   配置中心（.env 加载 + 启动校验）
+│   ├── uploads.py            #   附件上传（暂存/归档/分类/摘录 + 视觉降级消息）
 │   ├── token_tracker.py      #   token 事前预估 + 事后实耗 + 成本折算
 │   ├── observability.py      #   结构化日志 + 流式输出编排
 │   ├── ui.py                 #   过程框 UI（Rich Live）+ /trace
+│   ├── history_repair.py     #   会话历史修复（清理孤儿 tool_calls / 截断复读退化消息）
+│   ├── output_guard.py       #   输出退化检测（4-gram 多样性塌缩 + 严格周期双判据）
 │   └── prompts.py            #   System Prompt（行为准则）
 ├── client/                   # Electron 桌面客户端「奶蛙 Agent」
 │   ├── main.js               #   主进程（窗口 / IPC / 子进程管理 / Key 加密）
 │   ├── preload.js            #   预加载（contextBridge 安全暴露 API）
-│   ├── bridge.py             #   JSON-Lines 桥接服务（Electron ↔ Python 后端）
+│   ├── bridge.py             #   JSON-Lines 桥接服务（Electron ↔ Python 后端，请求工作线程 + 可取消/超时）
 │   ├── renderer/             #   渲染层（界面 / 主题 / Markdown / 过程框）
 │   ├── assets/               #   客户端素材（角色图 / 壁纸 / 动画）
 │   ├── package.json          #   electron + electron-builder 配置
 │   └── start.bat             #   一键启动（自动检查依赖）
 ├── tools/                    # 工具层（@register 注册表 + 模糊匹配防幻觉）
-│   ├── coding.py             #   读写文件 / 精确编辑 / 目录 / Shell（危险命令拦截）
+│   ├── coding.py             #   读写文件 / 精确编辑 / 目录 / Shell（危险命令拦截；异步子进程，取消杀整棵进程树）
 │   ├── documents.py          #   Word / Excel / PPT 生成
-│   ├── search.py             #   联网搜索（TTL 缓存 + 失败熔断）
+│   ├── search.py             #   联网搜索（天气走 Open-Meteo、通用走 Bing RSS、熔断带冷却）
 │   ├── mcp_client.py         #   MCP 外部工具（可选）
 │   └── registry.py           #   注册表 + 编辑距离纠错
 ├── memory/
@@ -393,7 +443,7 @@ GeneralTaskAgent/
 │   └── rate_limit.py         # 自定义限流（频率 + 并发）
 ├── config/models.json        # 模型目录（窗口 / 价格 / 密钥变量名）
 ├── scripts/ingest.py         # RAG 入库脚本
-├── tests/                    # pytest，125 个用例
+├── tests/                    # pytest，241 个用例（含附件上传 / 视觉降级 / 历史修复 / 进程树取消 / 输出退化护栏 / 桥接集成）
 ├── examples/snake/           # Agent 自己写的贪吃蛇 demo
 ├── requirements.txt          # 基础依赖
 ├── requirements-rag.txt      # RAG 扩展依赖（可选）
